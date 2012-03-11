@@ -28,6 +28,14 @@
           "JBOD Only": "JBODOnly",
           "Single RAID 10": "SingleRaid10"
       },
+      "installation-drive-settings": {
+          "Front drives": "FrontDrives",
+          "OS drives": "InternalDrives"
+      },
+      "internal-drive-settings": {
+          "None": "None",
+          "RAID 1 mirror": "Raid1"
+      },
       "node-usage": {
           "Nova": "Nova",
 	  "Swift": "Swift",
