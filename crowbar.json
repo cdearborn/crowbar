@@ -30,7 +30,7 @@
       },
       "installation-drive-settings": {
           "Front drives": "FrontDrives",
-          "OS drives": "InternalDrives"
+          "Internal drives": "InternalDrives"
       },
       "internal-drive-settings": {
           "None": "None",
