@@ -21,7 +21,13 @@ export PATH="/opt/dell/bin:/usr/local/bin:$PATH"
 export DEBUG=true
 [[ ! $HOME || $HOME = / ]] && export HOME="/root"
 mkdir -p "$HOME"
-die() { echo "$(date '+%F %T %z'): $@"; exit 1; }
+die() {
+    if [[ $crowbar_up && $FQDN ]]; then
+        crowbar crowbar transition "$FQDN" problem
+    fi
+    echo "$(date '+%F %T %z'): $@"
+    exit 1
+}
 
 crowbar_up=
 admin_node_up=
@@ -49,14 +55,13 @@ log_to() {
     return $_ret
 }
 
+
+
 chef_or_die() {
     if [ -e /opt/dell/bin/blocking_chef_client.sh ]; then
         log_to chef blocking_chef_client.sh && return
     else
         log_to chef chef-client && return
-    fi
-    if [[ $crowbar_up && $FQDN ]]; then
-        crowbar crowbar transition "$FQDN" problem
     fi
     # If we were left without an IP address, rectify that.
     ip link set eth0 up
@@ -72,6 +77,17 @@ knifeloop() {
         (($RC == 139)); }; do
         :
     done
+}
+
+# Sometimes the machine role (crowbar-${FQDN//./_}) does not get properly
+# attached to the admin node.  We are in deep trouble if that happens.
+check_machine_role() {
+    local count
+    for ((count=0; count <= 5; count++)); do
+        grep -q "crowbar-${FQDN//./_}" < <(knife node show "$FQDN" ) && return 0
+        sleep 10
+    done
+    die "Node machine-specific role got lost.  Deploy failed."
 }
 
 # Include OS specific functionality
@@ -244,6 +260,9 @@ if [[ ! -x /opt/tcpdump/tcpdump ]]; then
     cp /opt/tcpdump/tcpdump /updates/tcpdump
 fi
 
+# Bundle up our patches and put them in a sane place
+(cd "$DVD_PATH/extra"; tar czf "/tftpboot/patches.tar.gz" patches)
+
 chef_or_die "Initial chef run failed"
 
 echo "$(date '+%F %T %z'): Building Keys..."
@@ -296,8 +315,20 @@ echo "$(date '+%F %T %z'): Validating data bags..."
 log_to validation validate_bags.rb /opt/dell/chef/data_bags || \
     die "Crowbar configuration has errors.  Please fix and rerun install."
 
+echo "$(date '+%F %T %z'): Create Admin node role"
+NODE_ROLE="crowbar-${FQDN//./_}" 
+cat > /tmp/role.rb <<EOF
+name "$NODE_ROLE"
+description "Role for $FQDN"
+run_list()
+default_attributes( "crowbar" => { "network" => {} } )
+override_attributes()
+EOF
+knifeloop role from file /tmp/role.rb
+rm -rf /tmp/role.rb
+
 echo "$(date '+%F %T %z'): Update run list..."
-for role in crowbar deployer-client; do
+for role in crowbar deployer-client $NODE_ROLE; do
     knifeloop node run_list add "$FQDN" role["$role"] || \
         die "Could not add $role to Chef. Crowbar bringup will fail."
 done
@@ -309,9 +340,6 @@ echo "$(date '+%F %T %z'): Bringing up Crowbar..."
 chef_or_die "Failed to bring up Crowbar"
 # Make sure looper_chef_client is a NOOP until we are finished deploying
 touch /tmp/deploying
-
-# have chef_or_die change our status to problem if we fail
-crowbar_up=true
 
 # Add configured crowbar proposal
 if [ "$(crowbar crowbar proposal list)" != "default" ] ; then
@@ -340,6 +368,8 @@ crowbar crowbar proposal show default >/var/log/default-proposal.json
 crowbar crowbar proposal commit default || \
     die "Could not commit default proposal!"
 crowbar crowbar show default >/var/log/default.json
+# have die change our status to problem if we fail
+crowbar_up=true
 chef_or_die "Chef run after default proposal commit failed!"
 
 # Need to make sure that we have the indexer/expander finished
@@ -353,6 +383,7 @@ do
     COUNT=$(($COUNT + 1))
 done
 sleep 30 # This is lame - the queue can be empty, but still processing and mess up future operations.
+check_machine_role
 
 # transition though all the states to ready.  Make sure that
 # Chef has completly finished with transition before proceeding
@@ -370,6 +401,7 @@ do
             die "Sanity check for transitioning to $state failed!"
     fi
     chef_or_die "Chef run for $state transition failed!"
+    check_machine_role
 done
 
 # OK, let looper_chef_client run normally now.
